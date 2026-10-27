@@ -9,7 +9,7 @@ from pytorch_grad_cam.utils.image import show_cam_on_image
 from torchvision import transforms, models
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-classLabels = ["Apple","Banana","Cherry","Coconut","Grapes","Mango","Orange","Pineapple","Strawberry","Watermelon"]
+classLabels = ["Apple","Banana","Cherry","Coconut","Grapes","Orange","Pineapple","Strawberry","Watermelon"]
 transform = transforms.Compose([
             transforms.Resize(size=(224,224)),
             transforms.ToTensor(),
@@ -19,7 +19,7 @@ transform = transforms.Compose([
             )
 ])
 model = models.resnet18(weights = None)
-model.fc = torch.nn.Linear(model.fc.in_features, 10)
+model.fc = torch.nn.Linear(model.fc.in_features, 9)
 def importModel(path:str):
     checkpoint = torch.load(path)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -43,7 +43,7 @@ if st.button("Predict"):
         imageRGB = np.array(imageRGB).astype(np.float32)/255.0
 
         # Model importing 
-        modelImported = importModel(r"D:\AI\CNN Classifier\FruitClassifier\Models\Checkpoints\best_model_2.pth")
+        modelImported = importModel(r"D:\AI\CNN Classifier\FruitClassifier\Models\Checkpoints\best_path.pth")
 
         # Predictions
         prediction = modelImported(transformedImage)

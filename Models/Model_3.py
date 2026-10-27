@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+from torchvision import datasets, transforms, models
 from torchmetrics.classification import (
     MulticlassAccuracy,
     MulticlassPrecision,
@@ -19,10 +19,11 @@ TEST_DATA = r"D:\AI\CNN Classifier\FruitClassifier\Images\Test"
 
 IMG_SIZE = 224
 BATCH_SIZE = 64
-NUM_WORKERS = 0
+NUM_WORKERS = 12
 NUM_WORKER_STATE = True if NUM_WORKERS > 0 else False
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCH = 70
+
 
 trainTransforms = transforms.Compose([
     transforms.Resize((IMG_SIZE,IMG_SIZE)),
@@ -40,6 +41,7 @@ valTransforms = transforms.Compose([
     transforms.Normalize(mean = [0.5,0.5,0.5], std = [0.5,0.5,0.5])
 ])
 
+classLabels = ["Apple","Banana","Cherry","Coconut","Grapes","Orange","Pineapple","Strawberry","Watermelon"]
 trainData = datasets.ImageFolder(TRAIN_DATA, trainTransforms)
 valData = datasets.ImageFolder(VAL_DATA, valTransforms)
 testData = datasets.ImageFolder(TEST_DATA, valTransforms)
@@ -75,16 +77,21 @@ class fruitCNN(nn.Module):
         self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool2d((1,1)),
             nn.Flatten(),
-            nn.Dropout(0.2),
             nn.Linear(256,num_classes)
         )
     def forward(self,x):
         return self.classifier(self.features(x))
 
 
-model = fruitCNN(num_classes)
+model = models.efficientnet_b0(weights= models.EfficientNet_B0_Weights.DEFAULT)
+for params in model.parameters():
+    params.requires_grad = False
+
+in_features = model.classifier[1].in_features
+model.classifier[1] = nn.Linear(in_features, num_classes)
+
 lossFun = nn.CrossEntropyLoss()
-optim = torch.optim.Adam(model.parameters(), lr= 1e-3, weight_decay= 1e-5 )
+optim = torch.optim.Adam(model.fc.parameters(), lr= 1e-3, weight_decay= 1e-5 )
 
 def trainStep(trainDataLoader, model, optim, loss, num_classes = num_classes):
     trainLoss = 0
@@ -159,7 +166,7 @@ def testStep(testDataLoader, model):
     testPrec = MulticlassPrecision(num_classes=num_classes, average="macro").to(DEVICE)
     testRecall = MulticlassRecall(num_classes=num_classes, average="macro").to(DEVICE)
     testF1 = MulticlassF1Score(num_classes=num_classes, average="macro").to(DEVICE)
-
+    confusionMatrix = MulticlassConfusionMatrix(num_classes=num_classes).to(DEVICE)
     model.eval()
 
     with torch.inference_mode():
@@ -172,17 +179,19 @@ def testStep(testDataLoader, model):
             testPrec.update(prediction_classes, labels)
             testRecall.update(prediction_classes, labels)
             testF1.update(prediction_classes, labels)
+            confusionMatrix.update(prediction_classes,labels)
 
     acc = testAcc.compute().item()
     prec = testPrec.compute().item()
     recall = testRecall.compute().item()
     f1 = testF1.compute().item()
+    confusionMatrix.compute()
 
-    return acc, prec, recall, f1
+    return acc, prec, recall, f1, confusionMatrix
     
 class EarlyStopping():
 
-    def __init__(self,patience, delta, path = r"D:\AI\CNN Classifier\FruitClassifier\Models\Checkpoints\best_path.pth"):
+    def __init__(self,patience, delta, path = r"D:\AI\CNN Classifier\FruitClassifier\Models\Checkpoints\best_path_3.pth"):
         self.patience = patience
         self.delta = delta
         self.counter = 0
@@ -209,13 +218,14 @@ def trainModel(model,trainDataLoader, valDataLoader, loss, optimizer, scheduler,
         "trainLoss":[], "trainAcc":[], "trainPrec":[], "trainRecall":[], "trainF1":[],"valLoss":[], "valAcc":[], "valPrec":[], "valRecall":[], "valF1":[]
     }
     for i in range(100):
-        if os.path.exists(r"D:\AI\CNN Classifier\FruitClassifier\Models\Checkpoints\best_path.pth"):
-            model_checkpoint = torch.load(r"D:\AI\CNN Classifier\FruitClassifier\Models\Checkpoints\best_path.pth")
+        if os.path.exists(r"D:\AI\CNN Classifier\FruitClassifier\Models\Checkpoints\best_path_3.pth"):
+            model_checkpoint = torch.load(r"D:\AI\CNN Classifier\FruitClassifier\Models\Checkpoints\best_path_3.pth")
             model.load_state_dict(model_checkpoint["model_state_dict"])
             optimizer.load_state_dict(model_checkpoint["optim_state_dict"])
             scheduler.load_state_dict(model_checkpoint["scheduler_state_dict"])
+            earlyStop.counter = 0
             print(f"Beginning from {model_checkpoint['Epoch']}")
-
+            ep = model_checkpoint["Epoch"]
         else:
             print("Starting new training!")
             
@@ -236,20 +246,76 @@ def trainModel(model,trainDataLoader, valDataLoader, loss, optimizer, scheduler,
             results["valRecall"].append(valRecall)
             results["valF1"].append(valF1)
 
-            print(f"Epoch: {ep} | Train Loss: {trainLoss} | Train Accuracy: {trainAcc*100:.3f}% | Train Precision: {trainPrec*100:.3f}% | Train Recall: {trainRecall*100:.3f}% | Train F1 Score: {trainF1*100:.3f}% | Val Loss: {valLoss} | Val Accuracy: {valAcc*100:.3f}% | Val Precision: {valPrec*100:.3f}% | Val Recall: {valRecall*100:.3f}% | Val F1 Score: {valF1*100:.3f}% \n")
+            print(f"\nEpoch: {ep} | Train Loss: {trainLoss} | Train Accuracy: {trainAcc*100:.3f}% | Train Precision: {trainPrec*100:.3f}% | Train Recall: {trainRecall*100:.3f}% | Train F1 Score: {trainF1*100:.3f}% | Val Loss: {valLoss} | Val Accuracy: {valAcc*100:.3f}% | Val Precision: {valPrec*100:.3f}% | Val Recall: {valRecall*100:.3f}% | Val F1 Score: {valF1*100:.3f}% \n")
 
             if earlyStop(Loss = valLoss, Acc = valAcc, Precision= valPrec, Recall= valRecall, F1Score= valF1, model=model, epoch=ep, optim = optimizer, scheduler = scheduler):
                 print("Early Stopped!")
                 break
     return results
 
+def confmatPlot(confmat, classLabels = classLabels):
+    fig, ax = confmat.plot(labels = classLabels)
+    plt.xticks(rotation=45)
+    plt.show()
+import matplotlib.pyplot as plt
+import torch
+
+def showMisclassified(model, testData, testDataLoader, device, maxImages=12):
+    model.eval()
+    mistakes = []
+
+    with torch.inference_mode():
+        for images, labels in testDataLoader:
+            images = images.to(device)
+            labels = labels.to(device)
+
+            predictions = model(images).argmax(dim=1)
+            wrong = predictions != labels
+
+            for i in torch.where(wrong)[0]:
+                mistakes.append((
+                    images[i].cpu(),
+                    labels[i].item(),
+                    predictions[i].item()
+                ))
+
+                if len(mistakes) >= maxImages:
+                    break
+
+            if len(mistakes) >= maxImages:
+                break
+
+    fig, axes = plt.subplots(3, 4, figsize=(14, 10))
+
+    for ax, (image, actual, predicted) in zip(axes.flat, mistakes):
+        # Undo normalization from [-1, 1] to [0, 1]
+        image = (image * 0.5 + 0.5).clamp(0, 1)
+        ax.imshow(image.permute(1, 2, 0))
+        ax.set_title(
+            f"Actual: {testData.classes[actual]}\n"
+            f"Predicted: {testData.classes[predicted]}"
+        )
+        ax.axis("off")
+
+    for ax in axes.flat[len(mistakes):]:
+        ax.axis("off")
+
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__": 
     result = trainModel(model = model, loss=lossFun, optimizer=optim, trainDataLoader=trainDataLoader, valDataLoader=valDataLoader, scheduler = scheduler, earlyStop = earlyStop)
-    checkpoint = torch.load("Checkpoints/best_path.pth")
+    checkpoint = torch.load(r"D:\AI\CNN Classifier\FruitClassifier\Models\Checkpoints\best_path_3.pth")
     model.load_state_dict(checkpoint["model_state_dict"])
-    testAcc, testPrec, testRecall, testF1 = testStep(model=model, testDataLoader=testDataLoader)
+    testAcc, testPrec, testRecall, testF1,cm = testStep(model=model, testDataLoader=testDataLoader)
+    #confmatPlot(cm)
     print(f"Test Accuracy: {testAcc * 100:.2f}%")
     print(f"Test Precision: {testPrec:.4f}")
     print(f"Test Recall: {testRecall:.4f}")
     print(f"Test F1 Score: {testF1:.4f}")
+    showMisclassified(
+    model=model,
+    testData=testData,
+    testDataLoader=testDataLoader,
+    device=DEVICE
+)
